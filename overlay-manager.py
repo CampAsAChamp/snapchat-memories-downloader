@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Script for combining Snapchat overlay layers with base images and videos
+Snapchat Memories Manager - Unified utility for managing Snapchat memories
+Combines deduplication and overlay merging functionality
 """
 
 import os
 import sys
 import argparse
+import hashlib
 import subprocess
 from pathlib import Path
 from PIL import Image
@@ -14,6 +16,167 @@ from PIL import Image
 SOURCE_FOLDER = 'snapchat_memories'
 OUTPUT_FOLDER = 'snapchat_memories_combined'
 DEFAULT_JPEG_QUALITY = 95
+
+# ==============================================================================
+# DEDUPLICATION FUNCTIONS (from delete-dupes.py)
+# ==============================================================================
+
+def calculate_file_hash(filepath):
+    """Calculate SHA256 hash of a file"""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        print(f"❌ Error calculating hash for {filepath}: {e}")
+        return None
+
+def find_duplicates_in_folder(folder_path):
+    """Find duplicates in a folder based on hash"""
+    files = []
+    
+    for item in os.listdir(folder_path):
+        item_path = os.path.join(folder_path, item)
+        if os.path.isfile(item_path):
+            files.append(item_path)
+    
+    if len(files) < 2:
+        return []
+    
+    # Calculate hashes for all files
+    file_hashes = {}
+    for filepath in files:
+        file_hash = calculate_file_hash(filepath)
+        if file_hash:
+            if file_hash not in file_hashes:
+                file_hashes[file_hash] = []
+            file_hashes[file_hash].append(filepath)
+    
+    # Find duplicates (hash with multiple files)
+    duplicates = []
+    for file_hash, filepaths in file_hashes.items():
+        if len(filepaths) > 1:
+            # Sort: Keep the file that matches the folder name
+            folder_name = os.path.basename(folder_path)
+            
+            # Extract UUID/ID from folder name (format: YYYYMMDD_HHMMSS_UUID)
+            folder_uuid = folder_name.split('_', 2)[-1] if '_' in folder_name else folder_name
+            
+            primary = None
+            to_delete = []
+            
+            for filepath in filepaths:
+                filename = os.path.basename(filepath)
+                # Check if filename starts with folder UUID
+                if filename.startswith(folder_uuid):
+                    primary = filepath
+                else:
+                    to_delete.append(filepath)
+            
+            # If no match with folder UUID, keep the first file
+            if primary is None:
+                primary = filepaths[0]
+                to_delete = filepaths[1:]
+            
+            if to_delete:
+                duplicates.append({
+                    'hash': file_hash,
+                    'keep': primary,
+                    'delete': to_delete
+                })
+    
+    return duplicates
+
+def process_deduplication(directory, dry_run=True):
+    """Process all folders and find duplicates"""
+    if not os.path.exists(directory):
+        print(f"❌ Folder '{directory}' does not exist!")
+        return
+    
+    folders_with_duplicates = []
+    total_duplicates = 0
+    deleted_count = 0
+    
+    # Search all subfolders
+    for item in os.listdir(directory):
+        item_path = os.path.join(directory, item)
+        
+        if os.path.isdir(item_path):
+            duplicates = find_duplicates_in_folder(item_path)
+            
+            if duplicates:
+                folders_with_duplicates.append({
+                    'folder': item,
+                    'path': item_path,
+                    'duplicates': duplicates
+                })
+                
+                # Count all files to delete
+                for dup in duplicates:
+                    total_duplicates += len(dup['delete'])
+    
+    if not folders_with_duplicates:
+        print("✅ No duplicates found!")
+        return
+    
+    print(f"📊 {len(folders_with_duplicates)} folders with duplicates found")
+    print(f"🗑️  Total {total_duplicates} duplicates to delete\n")
+    print("=" * 80)
+    print()
+    
+    # Process each folder
+    for folder_info in folders_with_duplicates:
+        folder_name = folder_info['folder']
+        duplicates = folder_info['duplicates']
+        
+        print(f"📁 {folder_name}/")
+        print(f"   Found: {len(duplicates)} duplicate group(s)")
+        print()
+        
+        for dup in duplicates:
+            keep_file = os.path.basename(dup['keep'])
+            print(f"   ✅ KEEP:   {keep_file}")
+            
+            for delete_file in dup['delete']:
+                delete_filename = os.path.basename(delete_file)
+                print(f"   🗑️  DELETE: {delete_filename}")
+                
+                if not dry_run:
+                    try:
+                        os.remove(delete_file)
+                        deleted_count += 1
+                        print(f"      → Deleted!")
+                    except Exception as e:
+                        print(f"      ❌ Error: {e}")
+            
+            print()
+        
+        print("-" * 80)
+        print()
+    
+    # Summary
+    print("=" * 80)
+    print("SUMMARY")
+    print("=" * 80)
+    
+    if dry_run:
+        print("⚠️  DRY RUN MODE - No files deleted!")
+        print()
+        print(f"📊 Folders with duplicates: {len(folders_with_duplicates)}")
+        print(f"🗑️  Files to delete: {total_duplicates}")
+        print()
+        print("💡 To actually delete duplicates, rerun with --execute flag:")
+        print("   python overlay-manager.py dedupe --execute")
+    else:
+        print(f"✅ Successfully deleted: {deleted_count} files")
+        if deleted_count < total_duplicates:
+            print(f"⚠️  Errors with: {total_duplicates - deleted_count} files")
+
+# ==============================================================================
+# OVERLAY COMBINING FUNCTIONS (from combine-overlays.py)
+# ==============================================================================
 
 def check_ffmpeg_available():
     """Check if ffmpeg is installed and available"""
@@ -135,9 +298,9 @@ def combine_video(base_path, overlay_path, output_path):
         print(f"      ❌ Error combining video: {e}")
         return False
 
-def process_all_memories(source_dir, output_dir, dry_run=True, quality=DEFAULT_JPEG_QUALITY, has_ffmpeg=False):
+def process_overlay_combining(source_dir, output_dir, dry_run=True, quality=DEFAULT_JPEG_QUALITY, has_ffmpeg=False):
     """
-    Main processing function
+    Main processing function for combining overlays
     Finds all overlay folders and combines them
     """
     # Find all folders with overlays
@@ -241,7 +404,7 @@ def process_all_memories(source_dir, output_dir, dry_run=True, quality=DEFAULT_J
             print(f"   ⏭️  Skipped videos: {skipped_videos} (ffmpeg not available)")
         print()
         print("💡 To actually create the combined files, rerun with --execute flag:")
-        print("   python combine-overlays.py --execute")
+        print("   python overlay-manager.py combine --execute")
     else:
         print(f"✅ Successfully created:")
         print(f"   📷 Images: {processed_images}")
@@ -253,36 +416,35 @@ def process_all_memories(source_dir, output_dir, dry_run=True, quality=DEFAULT_J
         print()
         print(f"📂 Files saved to: {output_dir}/")
 
-def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(
-        description='Combine Snapchat overlay layers with base images and videos',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python combine-overlays.py              # Dry run (preview only)
-  python combine-overlays.py --execute    # Actually create combined files
-  python combine-overlays.py --execute --quality 90  # Custom JPEG quality
-        """
-    )
-    parser.add_argument(
-        '--execute',
-        action='store_true',
-        help='Actually create combined files (default is dry run mode)'
-    )
-    parser.add_argument(
-        '--quality',
-        type=int,
-        default=DEFAULT_JPEG_QUALITY,
-        help=f'JPEG quality for combined images (1-100, default: {DEFAULT_JPEG_QUALITY})'
-    )
-    parser.add_argument(
-        '--skip-prompt',
-        action='store_true',
-        help='Skip the initial confirmation prompt (for automation)'
-    )
+# ==============================================================================
+# CLI INTERFACE
+# ==============================================================================
+
+def handle_dedupe_command(args):
+    """Handle the dedupe subcommand"""
+    dry_run = not args.execute
     
-    args = parser.parse_args()
+    print("=" * 80)
+    print("Deduplicate Snapchat Memories")
+    print("=" * 80)
+    print()
+    
+    if dry_run:
+        print("⚠️  DRY RUN MODE - Preview only, no changes")
+        print()
+    else:
+        print("⚠️  WARNING: Duplicates will actually be deleted!")
+        if not args.skip_prompt:
+            response = input("Continue? (y/n): ")
+            if response.lower() not in ['y', 'yes']:
+                print("Cancelled.")
+                return
+        print()
+    
+    process_deduplication(SOURCE_FOLDER, dry_run=dry_run)
+
+def handle_combine_command(args):
+    """Handle the combine subcommand"""
     dry_run = not args.execute
     
     # Validate quality
@@ -296,7 +458,7 @@ Examples:
     print()
     
     # User-friendly prompt (unless skipped)
-    if not args.skip_prompt:
+    if not args.skip_prompt and not dry_run:
         print("This script combines Snapchat captions, text, emojis, and stickers")
         print("with your base photos and videos into single files.")
         print()
@@ -327,7 +489,80 @@ Examples:
         print(f"Creating combined files in: {OUTPUT_FOLDER}/")
         print()
     
-    process_all_memories(SOURCE_FOLDER, OUTPUT_FOLDER, dry_run=dry_run, quality=args.quality, has_ffmpeg=has_ffmpeg)
+    process_overlay_combining(SOURCE_FOLDER, OUTPUT_FOLDER, dry_run=dry_run, quality=args.quality, has_ffmpeg=has_ffmpeg)
+
+def main():
+    """Main entry point with subcommand parsing"""
+    parser = argparse.ArgumentParser(
+        description='Snapchat Memories Manager - Unified utility for managing Snapchat memories',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Deduplicate files (dry run)
+  python overlay-manager.py dedupe
+  
+  # Actually delete duplicates
+  python overlay-manager.py dedupe --execute
+  
+  # Combine overlays (dry run)
+  python overlay-manager.py combine
+  
+  # Actually create combined files
+  python overlay-manager.py combine --execute
+  
+  # Custom JPEG quality
+  python overlay-manager.py combine --execute --quality 90
+        """
+    )
+    
+    # Create subparsers for dedupe and combine commands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    subparsers.required = True
+    
+    # Dedupe subcommand
+    dedupe_parser = subparsers.add_parser(
+        'dedupe',
+        help='Remove duplicate files from Snapchat memories folders'
+    )
+    dedupe_parser.add_argument(
+        '--execute',
+        action='store_true',
+        help='Actually delete duplicates (default is dry run mode)'
+    )
+    dedupe_parser.add_argument(
+        '--skip-prompt',
+        action='store_true',
+        help='Skip the confirmation prompt (for automation)'
+    )
+    dedupe_parser.set_defaults(func=handle_dedupe_command)
+    
+    # Combine subcommand
+    combine_parser = subparsers.add_parser(
+        'combine',
+        help='Combine overlay layers with base images and videos'
+    )
+    combine_parser.add_argument(
+        '--execute',
+        action='store_true',
+        help='Actually create combined files (default is dry run mode)'
+    )
+    combine_parser.add_argument(
+        '--quality',
+        type=int,
+        default=DEFAULT_JPEG_QUALITY,
+        help=f'JPEG quality for combined images (1-100, default: {DEFAULT_JPEG_QUALITY})'
+    )
+    combine_parser.add_argument(
+        '--skip-prompt',
+        action='store_true',
+        help='Skip the initial confirmation prompt (for automation)'
+    )
+    combine_parser.set_defaults(func=handle_combine_command)
+    
+    # Parse arguments and call appropriate handler
+    args = parser.parse_args()
+    args.func(args)
 
 if __name__ == '__main__':
     main()
+
