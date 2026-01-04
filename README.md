@@ -23,14 +23,15 @@ source .venv/bin/activate
 ```bash
 # mac/linux
 which python
+
 # windows
 Get-Command python
 ```
 
-4. run install script (mac/linux)
+4. run installer script (mac/linux)
 ```bash
 chmod +x ./installer.sh
-./install.sh
+./installer.sh
 ```
 helper if operation not permitted (mac):
 ```bash
@@ -38,14 +39,14 @@ xattr -d com.apple.quarantine ./installer.sh
 ```
 
 5. request the download from snapchat
-- go to [https://accounts.snapchat.com]()
-- click on ``My Data```
-- select ``Export your Memories`` and click ``Request Only Memories```
-- select ``All Time``
-- confirm email and click ``Submit``
+- go to https://accounts.snapchat.com
+- click on `My Data`
+- select `Export your Memories` and click `Request Only Memories`
+- select `All Time`
+- confirm email and click `Submit`
 - after some time you'll get a mail with the download link. Follow the instructions and download the data
 
-6. paste the ``memories_history.html`` file in the project root (same folder as ``snapchat-downloader.py``)
+6. paste the `memories_history.html` file in the project root (same folder as `snapchat-downloader.py`)
 for some reason snapchat doesn't let you download all your memories in a single (or multiple) zip files, but just gives you a html file (which is buggy at least for me) which lets you download all your memories.
 
 7. run download script
@@ -54,13 +55,13 @@ python snapchat-downloader.py
 ```
 The script then downloads all your memories
 It creates the following folders/files 
-- ``./snapchat_memories/``: Folder where all your memories are stored. The script automatically edits the metadata, so your files have the correct date. Files also have the prefix with the correct date and time.
+- `./snapchat_memories/`: Folder where all your memories are stored. The script automatically edits the metadata, so your files have the correct date. Files also have the prefix with the correct date and time.
 Snaps with text, emojis or stickers are downloaded as zips containing all the layers. These zip files are extracted automatically.
-- ``downloaded_files.json``: Json file containing some information about the downloaded files
-- ``download_errors.json``: Json file containing files which had a download error
+- `downloaded_files.json`: Json file containing some information about the downloaded files
+- `download_errors.json`: Json file containing files which had a download error
 
 8. Trying failed downloads again
-- delete the download_errors.json file
+- delete the `download_errors.json` file
 - run the download script again
 - if any files do have an error again, try visiting the download link in your browser. Maybe there is no file on the other side (snapchat problem)
 - if it works, try running it again
@@ -70,19 +71,59 @@ Snaps with text, emojis or stickers are downloaded as zips containing all the la
 python metadata.py
 ```
 
-10. deleting duplicate entries in folders with overlays
+10. Combine overlays with base photos/videos (Optional)
+If you want your Snapchat captions, text, emojis, and stickers permanently added to your photos and videos, run this script. It creates combined files in a separate folder while keeping all your originals untouched.
+
+First, preview what will be created (dry run mode):
+```bash
+python combine-overlays.py
+```
+Then, if you want to create the combined files:
+```bash
+python combine-overlays.py --execute
+```
+The combined files will be saved to `snapchat_memories_combined/` folder. Your original files remain in `snapchat_memories/` unchanged.
+
+**Note:** Video processing requires ffmpeg. Install with: `brew install ffmpeg` (macOS) or `sudo apt-get install ffmpeg` (Linux)
+
+11. Deleting duplicate entries in folders with overlays
+First, preview the duplicates that will be deleted (dry run mode):
 ```bash
 python delete-dupes.py
 ```
+Then, if everything looks good, actually delete the duplicates:
+```bash
+python delete-dupes.py --execute
+```
 
-11. Reimport data (mac)
+12. Reimport data into Spotlight (mac)
+This forces macOS Spotlight to re-index your files with the updated metadata, so they appear correctly in searches:
 ```bash
 mdimport -r snapchat_memories/
 ```
 
-
-12. correct the FileCreatedTimestamp to match the Created Timestamp
+13. Correct file system timestamps to match EXIF metadata
+This synchronizes the file creation/modification dates you see in Finder with the actual dates stored in the EXIF metadata, ensuring your memories display with the correct dates everywhere:
 ```bash
-exiftool "-FileCreateDate<CreateDate" "-FileModifyDate<CreateDate" -ext mp4 -r snapchat_memories/
-exiftool "-FileCreateDate<CreateDate" "-FileModifyDate<CreateDate" -ext jpg -r snapchat_memories/
+exiftool "-FileCreateDate<CreateDate" "-FileModifyDate<CreateDate" -ext mp4 -r -progress snapchat_memories/
+exiftool "-FileCreateDate<CreateDate" "-FileModifyDate<CreateDate" -ext jpg -r -progress snapchat_memories/
 ```
+
+14. You're Done! 🎉
+
+---
+Your Snapchat memories are now fully downloaded and organized in the `snapchat_memories/` folder with:
+- ✅ Correct dates and timestamps (both EXIF metadata and file system dates)
+- ✅ Location data (if available)
+- ✅ No duplicates
+- ✅ Properly indexed by Spotlight (macOS)
+
+---
+
+### What to do next:
+
+**Keep as Backup:**
+Your memories are now in a standard format (MP4 and JPG files) that will work on any device or platform. Store them safely as a backup.
+
+**Cloud Storage:**
+Upload to Google Photos, iCloud, Dropbox, or any cloud service. The metadata will be preserved wherever you store them.
